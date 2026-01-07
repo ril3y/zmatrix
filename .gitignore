@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+*.bmp
+*.png
+*.jpg
+*.jpeg
+test_*.py
+
+# Captures
+*.pcap
+*.pcapng
+
+# Config backups
+*.rcvbp
+*.rcvp
