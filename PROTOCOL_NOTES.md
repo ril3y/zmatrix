@@ -198,6 +198,9 @@ elsif x = 43 then P0_RXD <= X"03";  -- 03 = HLG mode
 | 0x2C | 1 | White Balance Red | 0-255 (scaled from %) |
 | 0x2D | 1 | White Balance Green | 0-255 (scaled from %) |
 | 0x2E | 1 | White Balance Blue | 0-255 (scaled from %) |
+| 0x30 | 1 | Color Exchange Red | Output channel (0=B,1=G,2=R) default=2 |
+| 0x31 | 1 | Color Exchange Green | Output channel (0=B,1=G,2=R) default=1 |
+| 0x32 | 1 | Color Exchange Blue | Output channel (0=B,1=G,2=R) default=0 |
 | 0x40 | 1 | Cascade Direction | 0=R->L, 1=L->R, 2=T->B, 3=B->T |
 | 0xB2 | 4 | MinOE (Brightness) | IEEE 754 float (ns) |
 | 0xC4 | 2 | Cabinet Width | little-endian |
@@ -245,6 +248,20 @@ Formula: `StoredValue = round(255 × (Percentage / 100))`
 
 Note: Bit 7 (0x80) appears to indicate enhanced grayscale mode.
 Bits 0-2 may encode specific mode parameters.
+
+### Color Exchange Encoding (Offsets 0x30-0x32)
+Remaps color channels. Internal format is BGR, so position values are:
+- 0 = Blue position
+- 1 = Green position
+- 2 = Red position
+
+| Setting | 0x30 (R out) | 0x31 (G out) | 0x32 (B out) |
+|---------|--------------|--------------|--------------|
+| Default (no swap) | 2 | 1 | 0 |
+| R→G, G→B, B→R | 1 | 0 | 2 |
+| R→B, G→R, B→G | 0 | 2 | 1 |
+
+Example: To swap Red↔Blue, set 0x30=0, 0x31=1, 0x32=2
 
 ### Calculated Values (NOT stored)
 - **Refresh Rate** - calculated from dimensions/timing
@@ -365,9 +382,108 @@ Full config upload sequence (from CReceiverLayoutTool::DoSendLayout):
 
 ---
 
+## Discovery Response (0x08) Parsing
+
+### CReceiverInfo Structure
+```
+Offset   Size   Field              Notes
+------   ----   -----              -----
+0x00     4      vtable             CReceiverInfo vftable
+0x04     4      port_id            Filter (-1 = any)
+0x08     4      cascade_index      Filter (-1 = any)
+0x10     1      device_type_code   Model identifier (see table)
+0x14     1      firmware_major     Version major
+0x18     1      firmware_minor     Version minor
+0x24     1      flags              Bit 0 = "plus" variant
+```
+
+### Device Type Codes (Common Models)
+| Code | Hex | Model |
+|------|-----|-------|
+| 4, 7, 56 | 0x04, 0x07, 0x38 | 5A |
+| 8 | 0x08 | i5A |
+| 25 | 0x19 | i5 / i5+ (flag bit 0) |
+| 26-28 | 0x1A-0x1C | i5P, i6, i6P |
+| 29 | 0x1D | i7 |
+| 31, 107 | 0x1F, 0x6B | i8 |
+| 35, 71 | 0x23, 0x47 | i10 |
+| 45, 78 | 0x2D, 0x4E | i9 |
+| **59** | **0x3B** | **5A-75B Pro** |
+| 60 | 0x3C | QL75B Pro |
+| 64 | 0x40 | Q20 |
+| 68 | 0x44 | R8 |
+| 139 | 0x8B | CLT375B |
+
+Firmware string format: `"{Model} {major}.{minor:02d}"`
+
+---
+
+## Port Configuration Flags (BASICROUTE Detail)
+
+### Port Structure in Memory (40 bytes × 8 ports)
+```
+Offset   Size   Field       Description
+------   ----   -----       -----------
+0x00     32     GroupName   ASCII string (port label)
+0x20     8      GroupFlag   Configuration flags
+```
+
+Location: `main_struct + 0x3115` (ValidPortCount at `+0x30F4`)
+
+### GroupFlag (8 bytes) Bit Layout
+```
+Bytes 0-1 (16-bit config):
+  Bit 15-12: Reserved/extended features
+  Bit 11-8:  Output mode/cascade settings
+  Bit 7:     Port enable (1=enabled)
+  Bit 6:     Data direction (0=fwd, 1=rev)
+  Bit 5-4:   Pixel mapping mode
+  Bit 3-2:   Reserved
+  Bit 1-0:   Connection mode
+
+Bytes 2-7: Extended parameters (X/Y start, dimensions)
+```
+
+### Port Config API Functions
+| Function | Params | Purpose |
+|----------|--------|---------|
+| CLTProcessorVSetPortGroupPortFlag | 588 bytes | Full port config |
+| CLTProcessorVSetPortGroupEnable | 8 bytes | Enable/disable |
+| CLTProcessorVSetPortGroupBright | 140 bytes | Brightness |
+| CLTProcessorVSetPortControlArea | 28 bytes | X/Y/W/H region |
+
+---
+
+## Why VHDL in CLTDevice.dll?
+
+The DLL contains VHDL testbench templates because the 5A-75B has an **onboard FPGA**
+(likely Lattice ECP5) that receives custom bitstreams based on panel configuration.
+
+When you configure scan rate, color depth, HDR mode, etc., the software:
+1. Fills VHDL templates with your parameters
+2. Compiles or selects matching bitstream
+3. Uploads to receiver FPGA
+
+This is why the templates show exact byte positions - it's the FPGA's packet parser spec!
+
+---
+
+## Protocol Complete
+
+All major protocol elements decoded:
+- Ethernet framing and sync pattern
+- All 20+ packet type codes
+- .rcvbp file format (25+ config fields)
+- Discovery request/response
+- Port routing (BASICROUTE)
+- Flash save commands
+- Config upload sequence
+
 ## Next Steps
 
 1. **Wireshark capture** - Validate packet formats against live traffic
+
+---
 
 ## Brightness Packet Structure (from sub_10003460)
 

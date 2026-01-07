@@ -39,6 +39,12 @@ class PanelConfig:
     white_balance_g: int = 0
     white_balance_b: int = 0
 
+    # Color exchange (channel remapping)
+    # Values: 0=Blue, 1=Green, 2=Red (output position)
+    color_exchange_r: int = 2  # Default: R outputs to position 2 (R)
+    color_exchange_g: int = 1  # Default: G outputs to position 1 (G)
+    color_exchange_b: int = 0  # Default: B outputs to position 0 (B)
+
     # Brightness
     brightness_percent: int = 0
     brightness_level: int = 0
@@ -81,6 +87,32 @@ class PanelConfig:
     def scan_rate_str(self) -> str:
         """Human-readable scan rate."""
         return f"1:{self.scan_mode} scan"
+
+    @property
+    def color_order_str(self) -> str:
+        """Human-readable color order based on exchange settings."""
+        # Map position values to channel names
+        pos_to_channel = {0: 'B', 1: 'G', 2: 'R'}
+        # Build output order string
+        r_out = pos_to_channel.get(self.color_exchange_r, '?')
+        g_out = pos_to_channel.get(self.color_exchange_g, '?')
+        b_out = pos_to_channel.get(self.color_exchange_b, '?')
+
+        # Common patterns
+        if (self.color_exchange_r, self.color_exchange_g, self.color_exchange_b) == (2, 1, 0):
+            return "RGB (default)"
+        elif (self.color_exchange_r, self.color_exchange_g, self.color_exchange_b) == (0, 1, 2):
+            return "BGR (R↔B swapped)"
+        elif (self.color_exchange_r, self.color_exchange_g, self.color_exchange_b) == (1, 0, 2):
+            return "GRB"
+        elif (self.color_exchange_r, self.color_exchange_g, self.color_exchange_b) == (1, 2, 0):
+            return "GBR"
+        elif (self.color_exchange_r, self.color_exchange_g, self.color_exchange_b) == (2, 0, 1):
+            return "RBG"
+        elif (self.color_exchange_r, self.color_exchange_g, self.color_exchange_b) == (0, 2, 1):
+            return "BRG"
+        else:
+            return f"Custom (R→{r_out}, G→{g_out}, B→{b_out})"
 
 
 def decompress_rcvbp(data: bytes) -> bytes:
@@ -142,6 +174,13 @@ def parse_rcvbp(filepath: str) -> PanelConfig:
         config.white_balance_r = data[0x2C]
         config.white_balance_g = data[0x2D]
         config.white_balance_b = data[0x2E]
+
+    if len(data) >= 0x33:
+        # Color exchange (channel remapping) at offsets 0x30-0x32
+        # Values: 0=Blue position, 1=Green position, 2=Red position
+        config.color_exchange_r = data[0x30]
+        config.color_exchange_g = data[0x31]
+        config.color_exchange_b = data[0x32]
 
     if len(data) >= 0x41:
         config.cascade_direction = data[0x40]
@@ -220,6 +259,12 @@ def main():
                 "g": config.white_balance_g,
                 "b": config.white_balance_b
             },
+            "color_exchange": {
+                "r": config.color_exchange_r,
+                "g": config.color_exchange_g,
+                "b": config.color_exchange_b,
+                "order": config.color_order_str
+            },
             "brightness_percent": config.brightness_percent,
             "brightness_level": config.brightness_level,
             "min_oe_ns": config.min_oe_ns,
@@ -262,6 +307,7 @@ def main():
     print(f"║  Color Settings                                              ║")
     print(f"║    Gamma: {config.gamma_value:.2f}{' '*(49-len(f'{config.gamma_value:.2f}'))} ║")
     print(f"║    White Balance: R={config.white_balance_r} G={config.white_balance_g} B={config.white_balance_b}{' '*(30-len(f'R={config.white_balance_r} G={config.white_balance_g} B={config.white_balance_b}'))} ║")
+    print(f"║    Color Order: {config.color_order_str:<42} ║")
     print(f"║    Data Polarity: {'Reversed' if config.data_polarity else 'Normal':<40} ║")
     print(f"╠══════════════════════════════════════════════════════════════╣")
     print(f"║  Brightness                                                  ║")

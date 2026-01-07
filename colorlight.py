@@ -120,7 +120,19 @@ class ColorLight5A75B:
     MAX_PIXELS_PER_PACKET = 497  # Stay within ethernet MTU
     CONFIG_HEADER_SIZE = 40      # Full config header (MAC+EtherType+Ctrl+Sync+Type+Seq)
 
-    def __init__(self, width: int, height: int, interface: str = "eth0"):
+    # Color order presets (maps input RGB to output channel positions)
+    # Format: [R_out_pos, G_out_pos, B_out_pos] where 0=B, 1=G, 2=R in BGR output
+    COLOR_ORDERS = {
+        'RGB': [2, 1, 0],  # R→R(2), G→G(1), B→B(0) - standard
+        'RBG': [2, 0, 1],  # R→R(2), G→B(0), B→G(1)
+        'GRB': [1, 2, 0],  # R→G(1), G→R(2), B→B(0)
+        'GBR': [1, 0, 2],  # R→G(1), G→B(0), B→R(2)
+        'BRG': [0, 2, 1],  # R→B(0), G→R(2), B→G(1)
+        'BGR': [0, 1, 2],  # R→B(0), G→G(1), B→R(2)
+    }
+
+    def __init__(self, width: int, height: int, interface: str = "eth0",
+                 color_order: str = "BGR"):
         """
         Initialize the ColorLight driver.
 
@@ -128,6 +140,7 @@ class ColorLight5A75B:
             width: Total display width in pixels
             height: Total display height in pixels
             interface: Network interface name (e.g., "eth0", "enp1s0")
+            color_order: Panel color order - 'RGB', 'BGR', 'GRB', 'RBG', 'BRG', 'GBR'
         """
         self.width = width
         self.height = height
@@ -136,8 +149,27 @@ class ColorLight5A75B:
         self.brightness = 255  # 0-255
         self.rgb_brightness = (255, 255, 255)  # Per-channel brightness
 
-        # Framebuffer (RGB format, will convert to BGR when sending)
+        # Color order for panel (default BGR - most common)
+        self.set_color_order(color_order)
+
+        # Framebuffer (RGB format, will convert based on color_order when sending)
         self.framebuffer = np.zeros((height, width, 3), dtype=np.uint8)
+
+    def set_color_order(self, order: str):
+        """
+        Set the color channel order for the panel.
+
+        Args:
+            order: One of 'RGB', 'BGR', 'GRB', 'RBG', 'BRG', 'GBR'
+
+        Different LED panels have different color channel orderings depending
+        on the LED driver IC used. If colors appear swapped, try different orders.
+        """
+        order = order.upper()
+        if order not in self.COLOR_ORDERS:
+            raise ValueError(f"Invalid color order '{order}'. Must be one of: {list(self.COLOR_ORDERS.keys())}")
+        self.color_order = order
+        self._color_map = self.COLOR_ORDERS[order]
 
     def open(self):
         """Open raw ethernet socket."""
@@ -469,20 +501,26 @@ class ColorLight5A75B:
 
         # Send each row
         for row in range(self.height):
-            # Get row data and convert RGB to BGR
+            # Get row data and remap color channels based on panel's color order
             row_rgb = self.framebuffer[row]
-            row_bgr = row_rgb[:, ::-1].tobytes()  # Reverse RGB to BGR
+            # Apply color channel remapping: _color_map specifies output position for each input channel
+            # Input is RGB (0=R, 1=G, 2=B), output position determined by _color_map
+            row_reordered = np.zeros_like(row_rgb)
+            row_reordered[:, self._color_map[0]] = row_rgb[:, 0]  # R input → mapped position
+            row_reordered[:, self._color_map[1]] = row_rgb[:, 1]  # G input → mapped position
+            row_reordered[:, self._color_map[2]] = row_rgb[:, 2]  # B input → mapped position
+            row_data = row_reordered.tobytes()
 
             # Handle wide displays (>497 pixels) by splitting into chunks
             if self.width <= self.MAX_PIXELS_PER_PACKET:
-                self.send_row(row, row_bgr)
+                self.send_row(row, row_data)
             else:
                 # Split row into multiple packets
                 for offset in range(0, self.width, self.MAX_PIXELS_PER_PACKET):
                     chunk_pixels = min(self.MAX_PIXELS_PER_PACKET, self.width - offset)
                     chunk_start = offset * 3
                     chunk_end = chunk_start + (chunk_pixels * 3)
-                    self.send_row(row, row_bgr[chunk_start:chunk_end], offset)
+                    self.send_row(row, row_data[chunk_start:chunk_end], offset)
 
         # Wait 5ms then send display frame to trigger refresh
         time.sleep(0.005)
@@ -554,11 +592,15 @@ Examples:
   # Display an image
   sudo python3 colorlight.py -W 320 -H 128 --image photo.png
 
+  # If colors are wrong (red/blue swapped), try different color orders:
+  sudo python3 colorlight.py -W 320 -H 128 --test -c RGB
+  sudo python3 colorlight.py -W 320 -H 128 --test -c GRB
+
   # Just show config info (no root needed)
   python3 colorlight.py --info
 
-Note: The 5A-75B must be pre-configured with LEDVISION to match your
-physical panel layout. This driver just sends pixel data over ethernet.
+Note: The 5A-75B can now be configured entirely from Linux! Use --configure.
+Different panels have different color orderings - use -c/--color-order if colors look wrong.
         """
     )
 
@@ -578,6 +620,9 @@ physical panel layout. This driver just sends pixel data over ethernet.
     # Display settings
     disp = parser.add_argument_group("Display Settings")
     disp.add_argument("-b", "--brightness", type=int, default=128, help="Brightness 0-255 (default: 128)")
+    disp.add_argument("-c", "--color-order", default="BGR",
+                      choices=["RGB", "BGR", "GRB", "RBG", "BRG", "GBR"],
+                      help="Panel color order (default: BGR). Try different orders if colors are wrong.")
 
     # Actions
     act = parser.add_argument_group("Actions")
@@ -617,12 +662,13 @@ physical panel layout. This driver just sends pixel data over ethernet.
         print(f"  Frame size:    {width * height * 3:,} bytes (RGB)")
         print(f"  Bandwidth:     {width * height * 3 * 60 / 1_000_000:.1f} MB/s @ 60fps")
         print(f"  Interface:     {args.interface}")
+        print(f"  Color order:   {args.color_order}")
         return
 
     # Actions that require root
-    with ColorLight5A75B(width, height, args.interface) as driver:
+    with ColorLight5A75B(width, height, args.interface, args.color_order) as driver:
         driver.brightness = args.brightness
-        print(f"Display: {width}x{height} @ brightness {args.brightness}")
+        print(f"Display: {width}x{height} @ brightness {args.brightness}, color order: {args.color_order}")
 
         if args.discovery:
             print("Sending discovery request...")
